@@ -1,44 +1,236 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tiny DOOM-ish</title>
-  <!-- NOTE: paths now include /game/ -->
-  <link rel="stylesheet" href="game/css/styles.css">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lightweight 3D Shooter (HTML+Canvas)</title>
+<style>
+  :root { --bg:#0b0e13; --fg:#e8eef6; --ui:#19202a; --accent:#7cf; --hit:#f66; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,Segoe UI,Roboto,Arial,sans-serif;overflow:hidden}
+  header{position:fixed;left:0;right:0;top:0;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(#0e1218,#0a0e13)}
+  header .hint{opacity:.75;font-size:12px}
+  canvas{display:block;width:100vw;height:100vh}
+  #hud{position:fixed;left:10px;top:44px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06);padding:6px 10px;border-radius:10px;font-size:12px}
+  #msg{position:fixed;inset:0;display:none;place-items:center;text-align:center}
+  #msg .card{background:rgba(10,12,16,.9);border:1px solid #223; padding:16px 20px;border-radius:14px;min-width:260px}
+  #msg h1{margin:0 0 6px 0;font-size:20px}
+  #msg p{margin:6px 0 0 0;opacity:.8}
+</style>
 </head>
 <body>
-  <div id="wrap">
-    <header>
-      <div class="title">Tiny DOOM-ish</div>
-      <div class="hint">W/S = move • A/D = turn • Q/E = strafe • Click/Space = fire • Drag / ←→ = look</div>
-    </header>
+  <header>
+    <div>Lightweight 3D Shooter</div>
+    <div class="hint">Aim = mouse/touch • Shoot = click/tap • R = restart</div>
+  </header>
+  <canvas id="c"></canvas>
+  <div id="hud">Score 0 • Misses 0/5</div>
+  <div id="msg"><div class="card">
+    <h1 id="overTitle">Game Over</h1>
+    <p id="overText"></p>
+    <p style="margin-top:10px">Press <b>R</b> to play again</p>
+  </div></div>
 
-    <canvas id="canvas"></canvas>
-    <canvas id="mini" width="160" height="160"></canvas>
-    <div id="hud"></div>
+<script>
+(function(){
+  const cvs = document.getElementById('c');
+  const ctx = cvs.getContext('2d');
+  const hud = document.getElementById('hud');
+  const msg = document.getElementById('msg');
+  const overText = document.getElementById('overText');
 
-    <div id="controls" aria-hidden="false">
-      <div class="pad left">
-        <div class="btn" data-act="moveF"><span>↑</span></div>
-        <div class="btn" data-act="moveB"><span>↓</span></div>
-        <div class="btn" data-act="strafeL"><span>⟵</span></div>
-        <div class="btn" data-act="strafeR"><span>⟶</span></div>
-        <div class="btn" data-act="turnL"><span>⟲</span></div>
-        <div class="btn" data-act="turnR"><span>⟳</span></div>
-      </div>
-      <div class="pad right">
-        <div class="btn fire" data-act="fire"><span>FIRE</span></div>
-        <div class="btn" data-act="look"><span>DRAG to LOOK</span></div>
-        <div class="btn" data-act="noop"></div>
-        <div class="btn" data-act="noop"></div>
-        <div class="btn" data-act="noop"></div>
-        <div class="btn" data-act="noop"></div>
-      </div>
-    </div>
-  </div>
+  // Canvas + DPR
+  function resize(){
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    cvs.width = Math.floor(window.innerWidth * dpr);
+    cvs.height = Math.floor(window.innerHeight * dpr);
+    cvs.style.width = '100vw';
+    cvs.style.height = '100vh';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
 
-  <!-- NOTE: paths now include /game/ -->
-  <script src="game/js/game.js"></script>
+  // Simple 3D camera
+  const cam = { z: 0, fov: 800 }; // bigger = tighter
+  const bounds = { x: 16, y: 9, zNear: 2, zFar: 60 };
+
+  // Player & game state
+  let score = 0, misses = 0, maxMiss = 5, running = true;
+  let targets = [];
+
+  // Cursor (screen space)
+  let cursor = { x: window.innerWidth/2, y: window.innerHeight/2, down:false };
+  window.addEventListener('mousemove', e => { cursor.x = e.clientX; cursor.y = e.clientY; });
+  window.addEventListener('touchstart', e => { const t=e.changedTouches[0]; cursor.x=t.clientX; cursor.y=t.clientY; cursor.down=true; shoot(); e.preventDefault(); }, {passive:false});
+  window.addEventListener('touchmove', e => { const t=e.changedTouches[0]; cursor.x=t.clientX; cursor.y=t.clientY; e.preventDefault(); }, {passive:false});
+  window.addEventListener('touchend', ()=>{ cursor.down=false; }, {passive:false});
+  window.addEventListener('mousedown', ()=>{ cursor.down=true; shoot(); });
+  window.addEventListener('mouseup', ()=>{ cursor.down=false; });
+  window.addEventListener('keydown', e => {
+    if (e.key.toLowerCase() === 'r') restart();
+  });
+
+  // Spawn targets (cubes)
+  function spawnOne(){
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const x = (Math.random()*0.7 + 0.3) * bounds.x * side * Math.random(); // spread but not too far
+    const y = (Math.random()*0.7 + 0.3) * (Math.random()<0.5?-1:1) * bounds.y * Math.random();
+    const z = bounds.zFar;
+    const speed = 8 + Math.random()*6; // toward camera
+    const size = 0.9 + Math.random()*0.8; // world units
+    const spin = (Math.random()*2-1)*1.2; // rotation speed
+    targets.push({x,y,z, speed, size, spin, rot: Math.random()*Math.PI, alive:true});
+  }
+  function maintainSpawns(dt){
+    // Keep 10-ish in flight
+    const want = 10;
+    for(let i = targets.length; i < want; i++) spawnOne();
+    // Maybe add an extra randomly
+    if (Math.random() < 0.02) spawnOne();
+  }
+
+  // Project 3D point to 2D
+  function project(x,y,z){
+    const scale = cam.fov / (z - cam.z);
+    const sx = (x * scale) + (cvs.clientWidth / 2);
+    const sy = (y * scale) + (cvs.clientHeight / 2);
+    return { x:sx, y:sy, s:scale };
+  }
+
+  // Shooting
+  function shoot(){
+    if (!running) return;
+    // Find closest projected target to cursor within radius
+    let hitIndex = -1, bestDist = Infinity;
+    for (let i=0;i<targets.length;i++){
+      const t = targets[i];
+      if (!t.alive) continue;
+      const p = project(t.x, t.y, t.z);
+      const r = Math.max(12, t.size * 50 * (cam.fov / (t.z - cam.z)) / 16); // on-screen radius
+      const dx = p.x - cursor.x, dy = p.y - cursor.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < r*r && d2 < bestDist){ bestDist = d2; hitIndex = i; }
+    }
+    if (hitIndex >= 0){
+      // pop the target
+      const t = targets[hitIndex];
+      t.alive = false;
+      score++;
+      // tiny pop effect: spawn shards (just circles)
+      particles.push({x:t.x,y:t.y,z:t.z, life:0.25, color:'var(--accent)'});
+    } else {
+      // no penalty for whiff; optional: small screen shake
+      shake = 4;
+    }
+  }
+
+  // Miss logic: if a target reaches near plane -> miss
+  function updateTargets(dt){
+    for (const t of targets){
+      if (!t.alive) continue;
+      t.z -= t.speed * dt;
+      t.rot += t.spin * dt;
+      if (t.z < bounds.zNear){
+        t.alive = false;
+        misses++;
+        if (misses >= maxMiss) gameOver();
+      }
+    }
+    // Clean up dead far behind camera or popped
+    targets = targets.filter(t => t.alive || t.z > -5);
+  }
+
+  // Simple particles
+  let particles = [];
+  function updateParticles(dt){
+    for (const p of particles){ p.life -= dt; p.z -= 10*dt; }
+    particles = particles.filter(p => p.life > 0);
+  }
+
+  // Camera shake on miss
+  let shake = 0;
+
+  // Main loop
+  let last = performance.now()/1000;
+  function tick(){
+    const now = performance.now()/1000;
+    const dt = Math.min(0.033, now - last);
+    last = now;
+
+    if (running){
+      maintainSpawns(dt);
+      updateTargets(dt);
+      updateParticles(dt);
+      hud.textContent = `Score ${score} • Misses ${misses}/${maxMiss}`;
+    }
+
+    render();
+    requestAnimationFrame(tick);
+  }
+
+  // Render
+  function render(){
+    ctx.clearRect(0,0,cvs.clientWidth,cvs.clientHeight);
+
+    // starfield bg
+    const w = cvs.clientWidth, h = cvs.clientHeight;
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0,'#0a0f18'); g.addColorStop(1,'#080c12');
+    ctx.fillStyle = g; ctx.fillRect(0,0,w,h);
+
+    // subtle crosshair
+    ctx.strokeStyle = 'rgba(255,255,255,.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cursor.x-10, cursor.y); ctx.lineTo(cursor.x+10, cursor.y);
+    ctx.moveTo(cursor.x, cursor.y-10); ctx.lineTo(cursor.x, cursor.y+10);
+    ctx.stroke();
+
+    // optional shake
+    if (shake > 0){ shake *= 0.85; ctx.save(); ctx.translate((Math.random()-0.5)*shake, (Math.random()-0.5)*shake); }
+
+    // draw targets back-to-front (bigger z first)
+    const ordered = targets.slice().sort((a,b)=>b.z-a.z);
+    for(const t of ordered){
+      const p = project(t.x, t.y, t.z);
+      const s = Math.max(6, t.size * (cam.fov / (t.z - cam.z))*12);
+      // cube-ish: draw a rotating square
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(t.rot);
+      const alpha = Math.max(.2, 1 - (t.z / bounds.zFar));
+      ctx.fillStyle = `rgba(124,207,255,${alpha})`;
+      ctx.fillRect(-s/2, -s/2, s, s);
+      // inner shade
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(.35, 0.1 + (bounds.zFar - t.z)/bounds.zFar)})`;
+      ctx.fillRect(-s/2, -s*0.08, s, s*0.16);
+      ctx.restore();
+    }
+
+    // particles
+    for(const p of particles){
+      const pr = project(p.x,p.y,p.z);
+      const r = 3 + 12 * p.life;
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#7cf';
+      ctx.beginPath(); ctx.arc(pr.x, pr.y, r, 0, Math.PI*2); ctx.fill();
+    }
+
+    if (shake > 0) ctx.restore();
+  }
+
+  function gameOver(){
+    running = false;
+    msg.style.display = 'grid';
+    overText.textContent = `Score ${score} • Misses ${misses}/${maxMiss}`;
+  }
+  function restart(){
+    score = 0; misses = 0; running = true; targets = []; particles = []; shake = 0;
+    msg.style.display = 'none';
+  }
+
+  tick();
+})();
+</script>
 </body>
 </html>
