@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tiny DOOM-ish</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="wrap">
+    <header>
+      <div class="title">Tiny DOOM-ish</div>
+      <div class="hint">W/S = move • A/D = turn • Q/E = strafe • Click/Space = fire • Drag / ←→ = look</div>
+    </header>
+
+    <canvas id="canvas"></canvas>
+    <canvas id="mini" width="160" height="160"></canvas>
+    <div id="hud"></div>
+
+    <!-- Mobile controls -->
+    <div id="controls" aria-hidden="false">
+      <div class="pad left">
+        <div class="btn" data-act="moveF"><span>↑</span></div>
+        <div class="btn" data-act="moveB"><span>↓</span></div>
+        <div class="btn" data-act="strafeL"><span>⟵</span></div>
+        <div class="btn" data-act="strafeR"><span>⟶</span></div>
+        <div class="btn" data-act="turnL"><span>⟲</span></div>
+        <div class="btn" data-act="turnR"><span>⟳</span></div>
+      </div>
+      <div class="pad right">
+        <div class="btn fire" data-act="fire"><span>FIRE</span></div>
+        <div class="btn" data-act="look"><span>DRAG to LOOK</span></div>
+        <div class="btn" data-act="noop"></div>
+        <div class="btn" data-act="noop"></div>
+        <div class="btn" data-act="noop"></div>
+        <div class="btn" data-act="noop"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/game.js"></script>
+</body>
+</html>
