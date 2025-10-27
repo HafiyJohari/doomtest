@@ -165,50 +165,65 @@
   const BULLET_COOLDOWN = 0.18;
   const ENEMY_SPEED = 0.9, ENEMY_HITBOX = 0.35;
 
-  // --- Map
-  const MAP = [
-    '111111111111111111',
-    '1....1.......2...1',
-    '1..111..1........1',
-    '1..1....1..11....1',
-    '1..1....1........1',
-    '1..1....1111.....1',
-    '1............3...1',
-    '1..1111..........1',
-    '1..1..1..111.....1',
-    '1..1..1..........1',
-    '1..1..1111..111..1',
-    '1............1...1',
-    '1..2........1...31',
-    '1...........1....1',
-    '1....111.........1',
-    '1..............E.1',
-    '1................1',
-    '111111111111111111',
-  ].map(r=>r.split(''));
-  const H = MAP.length, W = MAP[0].length;
+// --- Map (keep a pristine copy)
+const MAP_BASE = [
+  '111111111111111111',
+  '1....1.......2...1',
+  '1..111..1........1',
+  '1..1....1..11....1',
+  '1..1....1........1',
+  '1..1....1111.....1',
+  '1............3...1',
+  '1..1111..........1',
+  '1..1..1..111.....1',
+  '1..1..1..........1',
+  '1..1..1111..111..1',
+  '1............1...1',
+  '1..2........1...31',
+  '1...........1....1',
+  '1....111.........1',
+  '1..............E.1',
+  '1................1',
+  '111111111111111111',
+];
 
-  // --- Enemies
-  let enemies=[];
-  function initEnemies(){
-    enemies.length=0;
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-      const t=MAP[y][x];
-      if(t==='2'||t==='3'||t==='E'){
-        enemies.push({x:x+0.5,y:y+0.5,hp:t==='E'?5:t==='3'?3:2,color:t==='E'?'#ff4d4d':t==='3'?'#ff8844':'#ffaa33',hitFlash:0});
-        MAP[y][x]='.';
+// Rebuild level fresh each time
+let MAP = [];
+let H = 0, W = 0;
+let enemies = [];
+
+function rebuildLevel() {
+  MAP = MAP_BASE.map(r => r.split(''));
+  H = MAP.length;
+  W = MAP[0].length;
+
+  enemies = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const t = MAP[y][x];
+      if (t === '2' || t === '3' || t === 'E') {
+        enemies.push({
+          x: x + 0.5,
+          y: y + 0.5,
+          hp: (t === 'E') ? 5 : (t === '3') ? 3 : 2,
+          color: (t === 'E') ? '#ff4d4d' : (t === '3') ? '#ff8844' : '#ffaa33',
+          hitFlash: 0
+        });
+        MAP[y][x] = '.'; // clear on this *fresh* copy only
       }
     }
   }
-  initEnemies();
+}
+
 
   // --- Player
   const player={x:2.5,y:2.5,angle:0,hp:100,ammo:99,lastShot:-999};
 
-  function resetGame(){
-    player.x=2.5; player.y=2.5; player.angle=0; player.hp=100; player.ammo=99; player.lastShot=-999;
-    initEnemies(); state='play'; over.style.display='none'; start.style.display='none';
-  }
+function resetGame(){
+  player.x=2.5; player.y=2.5; player.angle=0; player.hp=100; player.ammo=99; player.lastShot=-999;
+  rebuildLevel();                         // fresh map + enemies every time
+  state='play'; over.style.display='none'; start.style.display='none';
+}
 
   // --- Input
   const keys={w:false,s:false,strafeL:false,strafeR:false,left:false,right:false,fire:false};
@@ -519,6 +534,8 @@
 
     if(shake>0) ctx.restore();
 
+    rebuildLevel();
+    
     // HUD + minimap
     hud.textContent = `HP ${Math.max(0,Math.round(player.hp))} • Ammo ${player.ammo} • Demons ${enemies.length}`;
     renderMini();
