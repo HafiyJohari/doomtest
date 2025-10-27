@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tiny DOOM-ish (HTML + Canvas)</title>
+<style>
+  :root { --bg:#0e0e10; --fg:#e7e7e7; --ui:#22252a; --accent:#f44; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, Segoe UI, Roboto, Arial, sans-serif;
+    -webkit-user-select:none; user-select:none; touch-action:none;
+  }
+  #wrap { display:flex; flex-direction:column; height:100%; }
+  header {
+    padding:8px 12px; background:linear-gradient(#111,#0b0b0d); border-bottom:1px solid #1a1d22;
+    display:flex; align-items:center; gap:10px; justify-content:space-between;
+  }
+  header .title { font-weight:700; letter-spacing:.3px; }
+  header .hint { opacity:.7; font-size:12px; }
+  #canvas { width:100%; flex: 1 1 auto; display:block; background:#000; }
+  #hud {
+    position:fixed; left:8px; top:48px; padding:6px 8px; background:rgba(0,0,0,.35);
+    border:1px solid rgba(255,255,255,.06); border-radius:8px; font-size:12px; pointer-events:none;
+  }
+  /* Mobile controls */
+  #controls {
+    position:fixed; inset:0; pointer-events:none;
+  }
+  .pad {
+    position:absolute; bottom:14px; width:min(46vw,360px); max-width:360px; aspect-ratio:16/9;
+    pointer-events:auto; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(2,1fr);
+    gap:8px; padding:8px; border-radius:14px; background:rgba(15,17,22,.35); backdrop-filter: blur(6px);
+    border:1px solid rgba(255,255,255,.06);
+  }
+  .pad.left { left:10px; }
+  .pad.right { right:10px; }
+  .btn {
+    display:flex; align-items:center; justify-content:center; border-radius:12px;
+    background:linear-gradient(180deg, #1c1f26, #14171c); border:1px solid #272b33;
+    color:#c9d0d8; font-weight:600; text-shadow:0 1px 0 rgba(0,0,0,.6);
+    box-shadow: inset 0 2px 6px rgba(255,255,255,.03), 0 2px 12px rgba(0,0,0,.25);
+    user-select:none; -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { transform:translateY(1px); filter:brightness(0.95); }
+  .btn.fire { grid-column:1 / 4; background:linear-gradient(180deg, #3a0d0d, #260909); border-color:#4a1313; color:#ffbdbd; }
+  .btn span { pointer-events:none; }
+  /* Minimap */
+  #mini {
+    position:fixed; right:10px; top:56px; width:160px; height:160px; border-radius:10px;
+    background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.06); overflow:hidden;
+  }
+
+  @media (max-width: 920px) {
+    #mini { width:120px; height:120px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div class="title">Tiny DOOM-ish</div>
+    <div class="hint">WASD = move • Space = fire • Mouse drag / ←→ = look</div>
+  </header>
+  <canvas id="canvas"></canvas>
+  <canvas id="mini" width="160" height="160"></canvas>
+  <div id="hud"></div>
+  <div id="controls" aria-hidden="false">
+    <div class="pad left">
+      <div class="btn" data-act="moveF"><span>↑</span></div>
+      <div class="btn" data-act="moveB"><span>↓</span></div>
+      <div class="btn" data-act="strafeL"><span>⟵</span></div>
+      <div class="btn" data-act="strafeR"><span>⟶</span></div>
+      <div class="btn" data-act="turnL"><span>⟲</span></div>
+      <div class="btn" data-act="turnR"><span>⟳</span></div>
+    </div>
+    <div class="pad right">
+      <div class="btn fire" data-act="fire"><span>FIRE</span></div>
+      <div class="btn" data-act="look"><span>DRAG to LOOK</span></div>
+      <div class="btn" data-act="noop"></div>
+      <div class="btn" data-act="noop"></div>
+      <div class="btn" data-act="noop"></div>
+      <div class="btn" data-act="noop"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const cvs = document.getElementById('canvas');
+  const ctx = cvs.getContext('2d');
+  const hud = document.getElementById('hud');
+  const mini = document.getElementById('mini');
+  const mctx = mini.getContext('2d');
+
+  // ---------- Config ----------
+  const FOV = Math.PI / 3;           // 60°
+  const MAX_DEPTH = 20;
+  const WALL_SIZE = 1;
+  const NUM_RAYS_BASE = 180;         // scaled with width
+  const MOVE_SPEED = 3.0;            // units/sec
+  const ROT_SPEED = 2.4;             // rad/sec
+  const STRAFE_SPEED = 2.4;
+  const BULLET_COOLDOWN = 0.22;      // seconds
+  const ENEMY_SPEED = 0.9;
+  const ENEMY_HITBOX = 0.35;
+  const MAP_SCALE = 8;               // minimap cell size in px
+
+  // ---------- Map (1 = wall, 0 = empty) ----------
+  const MAP = [
+    '111111111111111111',
+    '1...........2....1',
+    '1..111..1........1',
+    '1..1....1..11....1',
+    '1..1....1........1',
+    '1..1....1111.....1',
+    '1............3...1',
+    '1..1111..........1',
+    '1..1..1..111.....1',
+    '1..1..1..........1',
+    '1..1..1111..111..1',
+    '1............1...1',
+    '1..2........1...31',
+    '1...........1....1',
+    '1....111.........1',
+    '1..............E.1',
+    '1................1',
+    '111111111111111111',
+  ].map(row => row.split(''));
+
+  const H = MAP.length;
+  const W = MAP[0].length;
+
+  // Enemies (from '2','3','E' markers)
+  const enemies = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const t = MAP[y][x];
+      if (t === '2' || t === '3' || t === 'E') {
+        enemies.push({
+          x: x + 0.5,
+          y: y + 0.5,
+          hp: (t === 'E') ? 5 : (t === '3') ? 3 : 2,
+          color: (t === 'E') ? '#ff4444' : (t === '3') ? '#ff8844' : '#ffaa33'
+        });
+        MAP[y][x] = '.'; // clear marker to empty space
+      }
+    }
+  }
+
+  // Player start
+  const player = {
+    x: 2.5, y: 2.5, angle: 0,
+    hp: 100, ammo: 99,
+    lastShot: -999
+  };
+
+  // Input state
+  const keys = { w:false, s:false, a:false, d:false, left:false, right:false, fire:false };
+  let dragging = false, lastDragX = null;
+
+  // Resize
+  function resize() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const rectW = window.innerWidth;
+    const rectH = window.innerHeight - 46; // header height approx
+    cvs.width = Math.floor(rectW * dpr);
+    cvs.height = Math.floor(rectH * dpr);
+    cvs.style.height = rectH + 'px';
+    cvs.style.width = rectW + 'px';
+    ctx.imageSmoothingEnabled = false;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Raycast helper
+  function isWall(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    if (yi < 0 || yi >= H || xi < 0 || xi >= W) return true;
+    return MAP[yi][xi] === '1';
+  }
+
+  function castRay(px, py, angle) {
+    const sin = Math.sin(angle), cos = Math.cos(angle);
+    let dist = 0, hit = false, hitX=0, hitY=0, side=0;
+
+    while (!hit && dist < MAX_DEPTH) {
+      dist += 0.01;
+      hitX = px + cos * dist;
+      hitY = py + sin * dist;
+      if (isWall(hitX, hitY)) {
+        hit = true;
+        // side shading (approx): check cell crossing
+        const fx = hitX - Math.floor(hitX);
+        const fy = hitY - Math.floor(hitY);
+        side = (fx < 0.02 || fx > 0.98) ? 1 : (fy < 0.02 || fy > 0.98) ? 0 : 0.5;
+      }
+    }
+    return { dist, hitX, hitY, side };
+  }
+
+  // Basic collision
+  function canMove(nx, ny) {
+    const pad = 0.2;
+    return !(
+      isWall(nx - pad, ny - pad) ||
+      isWall(nx + pad, ny - pad) ||
+      isWall(nx - pad, ny + pad) ||
+      isWall(nx + pad, ny + pad)
+    );
+  }
+
+  // Shooting
+  function tryShoot(time) {
+    if (time - player.lastShot < BULLET_COOLDOWN || player.ammo <= 0) return;
+    player.lastShot = time;
+    player.ammo--;
+
+    // Cast center ray and check enemies near it
+    const center = castRay(player.x, player.y, player.angle);
+    let closest = null, cDist = Infinity, idxHit = -1;
+
+    enemies.forEach((e, i) => {
+      const dx = e.x - player.x, dy = e.y - player.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > MAX_DEPTH) return;
+      // angle difference
+      let ang = Math.atan2(dy, dx) - player.angle;
+      ang = (ang + Math.PI*3) % (Math.PI*2) - Math.PI;
+      const halfFov = FOV * 0.5;
+      if (Math.abs(ang) < halfFov * 0.4) { // within crosshair cone
+        // LOS check
+        const steps = Math.ceil(dist / 0.05);
+        let blocked = false;
+        for (let s=1; s<=steps; s++) {
+          const tx = player.x + (dx * s/steps);
+          const ty = player.y + (dy * s/steps);
+          if (isWall(tx, ty)) { blocked = true; break; }
+        }
+        if (!blocked && dist < cDist) {
+          cDist = dist; closest = e; idxHit = i;
+        }
+      }
+    });
+
+    if (closest) {
+      closest.hp -= 1;
+      if (closest.hp <= 0) enemies.splice(idxHit, 1);
+    }
+  }
+
+  // Enemies update: chase player a bit, avoid walls
+  function updateEnemies(dt) {
+    enemies.forEach(e => {
+      const dx = player.x - e.x, dy = player.y - e.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 0.001) {
+        const step = Math.min(ENEMY_SPEED * dt, dist - 0.001);
+        const nx = e.x + (dx / dist) * step * 0.6;
+        const ny = e.y + (dy / dist) * step * 0.6;
+        if (!isWall(nx, e.y)) e.x = nx;
+        if (!isWall(e.x, ny)) e.y = ny;
+      }
+      // If they touch you, you take damage
+      if (dist < ENEMY_HITBOX + 0.2) {
+        player.hp = Math.max(0, player.hp - 10 * dt); // slow chip
+      }
+    });
+  }
+
+  // Input handlers
+  window.addEventListener('keydown', e => {
+    if (e.code === 'KeyW') keys.w = true;
+    if (e.code === 'KeyS') keys.s = true;
+    if (e.code === 'KeyA') keys.a = true;
+    if (e.code === 'KeyD') keys.d = true;
+    if (e.code === 'ArrowLeft') keys.left = true;
+    if (e.code === 'ArrowRight') keys.right = true;
+    if (e.code === 'Space') { keys.fire = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'KeyW') keys.w = false;
+    if (e.code === 'KeyS') keys.s = false;
+    if (e.code === 'KeyA') keys.a = false;
+    if (e.code === 'KeyD') keys.d = false;
+    if (e.code === 'ArrowLeft') keys.left = false;
+    if (e.code === 'ArrowRight') keys.right = false;
+    if (e.code === 'Space') keys.fire = false;
+  });
+
+  // Mouse look (drag)
+  cvs.addEventListener('mousedown', e => { dragging = true; lastDragX = e.clientX; });
+  window.addEventListener('mouseup', () => { dragging = false; lastDragX = null; });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    if (lastDragX != null) {
+      const dx = e.clientX - lastDragX;
+      player.angle += dx * 0.003;
+    }
+    lastDragX = e.clientX;
+  });
+
+  // Mobile buttons
+  const controls = document.getElementById('controls');
+  controls.addEventListener('touchstart', onTouch, {passive:false});
+  controls.addEventListener('touchend', onTouchEnd, {passive:false});
+  controls.addEventListener('touchmove', onTouchMove, {passive:false});
+  let touchLookId = null, touchLookLastX = null;
+  function onTouch(e){
+    for (const t of e.changedTouches) {
+      const el = document.elementFromPoint(t.clientX, t.clientY);
+      if (!el || !el.dataset) continue;
+      const act = el.dataset.act;
+      if (!act) continue;
+      if (act === 'fire') { keys.fire = true; }
+      if (act === 'moveF') keys.w = true;
+      if (act === 'moveB') keys.s = true;
+      if (act === 'strafeL') keys.a = true;
+      if (act === 'strafeR') keys.d = true;
+      if (act === 'turnL') keys.left = true;
+      if (act === 'turnR') keys.right = true;
+      if (act === 'look') { touchLookId = t.identifier; touchLookLastX = t.clientX; }
+    }
+    e.preventDefault();
+  }
+  function onTouchMove(e){
+    for (const t of e.changedTouches) {
+      if (t.identifier === touchLookId && touchLookLastX != null) {
+        const dx = t.clientX - touchLookLastX;
+        player.angle += dx * 0.004;
+        touchLookLastX = t.clientX;
+      }
+    }
+    e.preventDefault();
+  }
+  function onTouchEnd(e){
+    for (const t of e.changedTouches) {
+      const el = document.elementFromPoint(t.clientX, t.clientY);
+      // Clear everything on end (simpler)
+      keys.fire = false; keys.w=false; keys.s=false; keys.a=false; keys.d=false; keys.left=false; keys.right=false;
+      if (t.identifier === touchLookId) { touchLookId = null; touchLookLastX = null; }
+    }
+    e.preventDefault();
+  }
+
+  // Game loop
+  let last = performance.now() / 1000;
+
+  function step() {
+    const now = performance.now() / 1000;
+    const dt = Math.min(0.033, now - last);
+    last = now;
+
+    // Movement
+    let moveX = 0, moveY = 0;
+    const cos = Math.cos(player.angle), sin = Math.sin(player.angle);
+    if (keys.w) { moveX += cos * MOVE_SPEED * dt; moveY += sin * MOVE_SPEED * dt; }
+    if (keys.s) { moveX -= cos * MOVE_SPEED * dt; moveY -= sin * MOVE_SPEED * dt; }
+    if (keys.a) { moveX += -sin * STRAFE_SPEED * dt; moveY += cos * STRAFE_SPEED * dt; }
+    if (keys.d) { moveX += sin * STRAFE_SPEED * dt; moveY += -cos * STRAFE_SPEED * dt; }
+
+    const nx = player.x + moveX, ny = player.y + moveY;
+    if (canMove(nx, player.y)) player.x = nx;
+    if (canMove(player.x, ny)) player.y = ny;
+
+    if (keys.left) player.angle -= ROT_SPEED * dt;
+    if (keys.right) player.angle += ROT_SPEED * dt;
+
+    if (keys.fire) tryShoot(now);
+
+    updateEnemies(dt);
+    render();
+    requestAnimationFrame(step);
+  }
+
+  function render() {
+    // Background (sky/floor gradient)
+    const w = cvs.width, h = cvs.height;
+    const half = h >> 1;
+
+    // Draw ceiling and floor
+    const gTop = ctx.createLinearGradient(0,0,0,half);
+    gTop.addColorStop(0, '#0a0a0e');
+    gTop.addColorStop(1, '#0d0f17');
+    ctx.fillStyle = gTop; ctx.fillRect(0,0,w,half);
+
+    const gBot = ctx.createLinearGradient(0,half,0,h);
+    gBot.addColorStop(0, '#0d0f17');
+    gBot.addColorStop(1, '#10151c');
+    ctx.fillStyle = gBot; ctx.fillRect(0,half,w,h-half);
+
+    // Rays
+    const rays = Math.floor(NUM_RAYS_BASE * (w / 800));
+    const colWidth = w / rays;
+    const startAngle = player.angle - FOV/2;
+    for (let i = 0; i < rays; i++) {
+      const rayAng = startAngle + (i / rays) * FOV;
+      const { dist, side } = castRay(player.x, player.y, rayAng);
+      const corrected = dist * Math.cos(rayAng - player.angle); // remove fish-eye
+      const wallH = Math.min(h, (WALL_SIZE / corrected) * (h / (2 * Math.tan(FOV/2))) );
+
+      // Shade by distance & side
+      const shade = Math.max(0, 1 - corrected / MAX_DEPTH);
+      const wallCol = side < 0.5 ? 170 : 200;
+      ctx.fillStyle = `rgba(${wallCol},${Math.floor(120+50*shade)},${Math.floor(140+20*shade)},${0.85})`;
+      const x = Math.floor(i * colWidth);
+      ctx.fillRect(x, (half - wallH/2), Math.ceil(colWidth+1), wallH);
+
+      // Edge lines for depth feel
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(0.25, 0.005 * corrected)})`;
+      ctx.fillRect(x, 0, 1, h);
+    }
+
+    // Render sprites (enemies) as billboards from back to front
+    const spr = enemies.map(e => {
+      const dx = e.x - player.x, dy = e.y - player.y;
+      const dist = Math.hypot(dx, dy);
+      let angle = Math.atan2(dy, dx) - player.angle;
+      angle = (angle + Math.PI*3) % (Math.PI*2) - Math.PI;
+      return { e, dist, angle };
+    }).filter(s => Math.abs(s.angle) < FOV/1.2) // within rough FOV
+      .sort((a,b) => b.dist - a.dist);
+
+    spr.forEach(s => {
+      const { e, dist, angle } = s;
+      const size = Math.min(h, (1.4 / dist) * (h / (2 * Math.tan(FOV/2))) * 1.8);
+      const screenX = (angle / FOV + 0.5) * cvs.width;
+      const top = (h/2) - size*0.9;
+      // Fade with distance
+      const alpha = Math.max(0.15, 1 - dist / (MAX_DEPTH*0.9));
+      ctx.fillStyle = hexWithAlpha(e.color, alpha);
+      ctx.fillRect(screenX - size/2, top, size, size);
+
+      // Eyes / face stripe
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(0.5, 0.2 + dist*0.02)})`;
+      ctx.fillRect(screenX - size/2, top + size*0.4, size, size*0.15);
+    });
+
+    // Crosshair
+    ctx.strokeStyle = 'rgba(255,255,255,.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(w/2 - 10, h/2); ctx.lineTo(w/2 + 10, h/2);
+    ctx.moveTo(w/2, h/2 - 10); ctx.lineTo(w/2, h/2 + 10);
+    ctx.stroke();
+
+    // HUD
+    hud.textContent = `HP ${Math.round(player.hp)}  •  Ammo ${player.ammo}  •  Demons ${enemies.length}`;
+
+    // Minimap
+    renderMini();
+  }
+
+  function renderMini() {
+    const mw = mini.width, mh = mini.height;
+    mctx.clearRect(0,0,mw,mh);
+    const cellX = mw / (W), cellY = mh / (H);
+    for (let y=0; y<H; y++){
+      for (let x=0; x<W; x++){
+        if (MAP[y][x] === '1') {
+          mctx.fillStyle = '#3a3f47';
+        } else {
+          mctx.fillStyle = '#13161b';
+        }
+        mctx.fillRect(x*cellX, y*cellY, cellX, cellY);
+      }
+    }
+    // Enemies
+    enemies.forEach(e => {
+      mctx.fillStyle = '#ff6464';
+      mctx.beginPath();
+      mctx.arc(e.x*cellX, e.y*cellY, 3, 0, Math.PI*2);
+      mctx.fill();
+    });
+    // Player
+    mctx.fillStyle = '#9ee37d';
+    mctx.beginPath();
+    mctx.arc(player.x*cellX, player.y*cellY, 3, 0, Math.PI*2);
+    mctx.fill();
+    // Direction
+    mctx.strokeStyle = '#9ee37d';
+    mctx.beginPath();
+    mctx.moveTo(player.x*cellX, player.y*cellY);
+    mctx.lineTo((player.x + Math.cos(player.angle)*0.8)*cellX, (player.y + Math.sin(player.angle)*0.8)*cellY);
+    mctx.stroke();
+  }
+
+  function hexWithAlpha(hex, a){
+    // expects #rrggbb
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
